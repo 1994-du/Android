@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew assembleDebug --console=plain)",
+      "Bash(echo $PATH)",
+      "Bash(claude --version)",
+      "Bash(echo $SHELL)",
+      "Bash(~/.local/bin/claude --version)",
+      "Bash(/Users/dxx/.local/bin/claude --help)",
+      "Bash(brew list:*)",
+      "Bash(timeout 3 claude)",
+      "Bash(claude auth:*)",
+      "Bash(chmod +x ~/test_claude.sh)",
+      "Bash(~/test_claude.sh)",
+      "Bash(sips -g pixelWidth -g pixelHeight /Users/dxx/Desktop/MyAndroid/.codepilot-uploads/1774795214659-avatar.jpg)",
+      "Bash(brew install:*)",
+      "Bash(convert .codepilot-uploads/1774795214659-avatar.jpg -crop 939x939+0+0 tmp_icons/avatar_square.jpg)",
+      "Bash(./gradlew assembleDebug)"
+    ]
+  }
+}
