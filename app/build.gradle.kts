@@ -1,6 +1,11 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+
 plugins {
     alias(libs.plugins.android.application)
 }
+
+val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
 
 android {
     namespace = "com.example.myandroid"
@@ -34,6 +39,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 }
+
+base.archivesName.set("DxAndroid-$timestamp")
 
 dependencies {
     implementation(libs.androidx.core.ktx)
