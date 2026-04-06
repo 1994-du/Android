@@ -24,15 +24,19 @@ import java.util.Date
 import java.util.Locale
 import android.media.RingtoneManager
 import android.content.Context
+import org.json.JSONObject
 class MainActivity : AppCompatActivity() {
 
     lateinit var webView: WebView
     private var currentCallbackId: String? = null
     private lateinit var takePictureLauncher: ActivityResultLauncher<Uri>
+    private lateinit var takePicturePreviewLauncher: ActivityResultLauncher<Void?>
     private lateinit var pickImageLauncher: ActivityResultLauncher<String>
     private var tempImageUri: Uri? = null
     private lateinit var notificationHelper: NotificationHelper
     private var isAppInBackground = false
+    private var keyboardHeight = 0
+    private var isKeyboardVisible = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -104,6 +108,29 @@ class MainActivity : AppCompatActivity() {
             tempImageUri = null
         }
 
+        // 相机预览模式（不需要存储权限）
+        takePicturePreviewLauncher = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+            if (bitmap != null) {
+                val callbackId = currentCallbackId ?: "default"
+                val base64 = bitmapToBase64(bitmap)
+                if (base64 != null) {
+                    val data = JSONObject()
+                    data.put("callbackId", callbackId)
+                    data.put("image", base64)
+                    data.put("type", "camera")
+                    val js = "if (window.handlePhotoResult) { window.handlePhotoResult(" + data.toString() + ") }"
+                    webView.post {
+                        webView.evaluateJavascript(js, null)
+                    }
+                } else {
+                    sendErrorToWeb("图片转换失败")
+                }
+            } else {
+                sendErrorToWeb("拍照失败")
+            }
+            currentCallbackId = null
+        }
+
         pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             if (uri != null) {
                 handleImageResult(uri)
@@ -122,6 +149,8 @@ class MainActivity : AppCompatActivity() {
         checkNotificationPermission()
         
         handleIntent(intent)
+        
+        setupKeyboardListener()
     }
 
     @Suppress("DEPRECATION")
@@ -199,6 +228,21 @@ class MainActivity : AppCompatActivity() {
                 webView.reload()
             }
         }
+
+        @JavascriptInterface
+        fun getKeyboardHeight() {
+            runOnUiThread {
+                val density = resources.displayMetrics.density
+                val keyboardHeightDp = keyboardHeight / density
+                webView.post {
+                    webView.evaluateJavascript("""
+                        if (window.handleKeyboardHeight) {
+                            window.handleKeyboardHeight($isKeyboardVisible, $keyboardHeightDp);
+                        }
+                    """.trimIndent(), null)
+                }
+            }
+        }
     }
 
     private fun checkCameraPermission(): Boolean {
@@ -212,7 +256,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkStoragePermission(): Boolean {
         val permissions = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ 使用 READ_MEDIA_IMAGES
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+            }
+        } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            // Android 12- 使用 READ_EXTERNAL_STORAGE
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
                 permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
             }
@@ -247,15 +297,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun launchCamera() {
         try {
-            val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val imageFileName = "JPEG_${timeStamp}_"
-            val storageDir = getExternalFilesDir(null)
-            val imageFile = File.createTempFile(imageFileName, ".jpg", storageDir)
-            tempImageUri = Uri.fromFile(imageFile)
-            takePictureLauncher.launch(tempImageUri)
+            // 使用相机预览模式，不需要存储权限
+            takePicturePreviewLauncher.launch(null)
         } catch (e: Exception) {
             e.printStackTrace()
-            sendErrorToWeb("创建图片文件失败: ${e.message}")
+            sendErrorToWeb("相机启动失败: ${e.message}")
         }
     }
 
@@ -265,14 +311,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleImageResult(uri: Uri) {
         try {
-            val imagePath = uri.toString()
             val callbackId = currentCallbackId ?: "default"
-            webView.post {
-                webView.evaluateJavascript("""
-                    if (window.handlePhotoResult) {
-                        window.handlePhotoResult('$callbackId', '$imagePath');
-                    }
-                """.trimIndent(), null)
+            val base64 = uriToBase64(uri)
+            if (base64 != null) {
+                val data = JSONObject()
+                data.put("callbackId", callbackId)
+                data.put("image", base64)
+                data.put("type", "gallery")
+                val js = "if (window.handlePhotoResult) { window.handlePhotoResult(" + data.toString() + ") }"
+                webView.post {
+                    webView.evaluateJavascript(js, null)
+                }
+            } else {
+                sendErrorToWeb("图片转换失败")
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -282,14 +333,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun uriToBase64(uri: Uri): String? {
+        try {
+            val inputStream = contentResolver.openInputStream(uri)
+            val bytes = inputStream?.readBytes()
+            inputStream?.close()
+            if (bytes != null) {
+                return "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.DEFAULT)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return null
+    }
+
+    private fun bitmapToBase64(bitmap: android.graphics.Bitmap): String? {
+        try {
+            val byteArrayOutputStream = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)
+            val bytes = byteArrayOutputStream.toByteArray()
+            byteArrayOutputStream.close()
+            return "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.DEFAULT)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return null
+    }
+
     private fun sendErrorToWeb(error: String) {
         val callbackId = currentCallbackId ?: "default"
+        val data = JSONObject()
+        data.put("callbackId", callbackId)
+        data.put("error", error)
+        val js = "if (window.handlePhotoError) { window.handlePhotoError(" + data.toString() + ") }"
         webView.post {
-            webView.evaluateJavascript("""
-                if (window.handlePhotoError) {
-                    window.handlePhotoError('$callbackId', '$error');
-                }
-            """.trimIndent(), null)
+            webView.evaluateJavascript(js, null)
         }
         currentCallbackId = null
     }
@@ -371,6 +449,45 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         isAppInBackground = true
+    }
+
+    private fun setupKeyboardListener() {
+        val rootView = window.decorView.rootView
+        rootView.viewTreeObserver.addOnGlobalLayoutListener {
+            val rect = android.graphics.Rect()
+            rootView.getWindowVisibleDisplayFrame(rect)
+            
+            val screenHeight = rootView.height
+            val keyboardHeight = screenHeight - rect.bottom
+            
+            if (keyboardHeight > screenHeight * 0.15) {
+                // 输入法弹出
+                if (!isKeyboardVisible) {
+                    this.keyboardHeight = keyboardHeight
+                    isKeyboardVisible = true
+                    notifyKeyboardStatus(true, keyboardHeight)
+                }
+            } else {
+                // 输入法收起
+                if (isKeyboardVisible) {
+                    isKeyboardVisible = false
+                    notifyKeyboardStatus(false, 0)
+                }
+            }
+        }
+    }
+
+    private fun notifyKeyboardStatus(visible: Boolean, height: Int) {
+        val density = resources.displayMetrics.density
+        val heightDp = height / density
+        
+        webView.post {
+            webView.evaluateJavascript("""
+                if (window.handleKeyboardStatus) {
+                    window.handleKeyboardStatus($visible, $heightDp);
+                }
+            """.trimIndent(), null)
+        }
     }
 
     override fun onDestroy() {
