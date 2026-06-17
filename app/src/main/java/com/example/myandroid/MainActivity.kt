@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.JavascriptInterface
+import android.webkit.WebSettings
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.activity.OnBackPressedCallback
@@ -25,6 +26,7 @@ import java.util.Locale
 import android.media.RingtoneManager
 import android.content.Context
 import org.json.JSONObject
+
 class MainActivity : AppCompatActivity() {
 
     lateinit var webView: WebView
@@ -64,9 +66,11 @@ class MainActivity : AppCompatActivity() {
         webView.settings.builtInZoomControls = false
         webView.settings.useWideViewPort = true
         webView.settings.loadWithOverviewMode = true
-        webView.settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.SINGLE_COLUMN
+        webView.settings.layoutAlgorithm = WebSettings.LayoutAlgorithm.SINGLE_COLUMN
         webView.settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
         webView.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        webView.settings.javaScriptCanOpenWindowsAutomatically = true
+        NativeWebSocketManager.bindWebView(webView)
         // ⭐ 获取状态栏高度
         val resourceId = resources.getIdentifier("status_bar_height", "dimen", "android")
         val statusBarHeight = if (resourceId > 0) {
@@ -92,6 +96,8 @@ class MainActivity : AppCompatActivity() {
                     window.STATUS_BAR_HEIGHT = $statusBarHeightDp;
                     window.dispatchEvent(new Event('statusBarReady'));
                 """.trimIndent(), null)
+                NativeWebSocketManager.onPageReady()
+                NativeWebSocketManager.onHostResume()
             }
         }
         webView.loadUrl("http://106.15.207.57/MyApp/")
@@ -110,6 +116,7 @@ class MainActivity : AppCompatActivity() {
 
         // 相机预览模式（不需要存储权限）
         takePicturePreviewLauncher = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+            NativeWebSocketManager.onHostResume()
             if (bitmap != null) {
                 val callbackId = currentCallbackId ?: "default"
                 val base64 = bitmapToBase64(bitmap)
@@ -132,6 +139,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            NativeWebSocketManager.onHostResume()
             if (uri != null) {
                 handleImageResult(uri)
             } else {
@@ -142,6 +150,7 @@ class MainActivity : AppCompatActivity() {
         // Add JavaScript interface
         webView.addJavascriptInterface(PhotoJavaScriptInterface(), "AndroidPhoto")
         webView.addJavascriptInterface(ChatJavaScriptInterface(), "AndroidChat")
+        webView.addJavascriptInterface(WebSocketJavaScriptInterface(), "AndroidWebSocket")
         
         notificationHelper = NotificationHelper(this)
         notificationHelper.createNotificationChannel()
@@ -245,6 +254,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    inner class WebSocketJavaScriptInterface {
+        @JavascriptInterface
+        fun connect(wsUrl: String, userInfoJson: String?) {
+            NativeWebSocketManager.connect(wsUrl, userInfoJson)
+        }
+
+        @JavascriptInterface
+        fun send(messageJson: String) {
+            NativeWebSocketManager.send(messageJson)
+        }
+
+        @JavascriptInterface
+        fun close() {
+            NativeWebSocketManager.close()
+        }
+
+        @JavascriptInterface
+        fun reconnect() {
+            NativeWebSocketManager.reconnect()
+        }
+
+        @JavascriptInterface
+        fun isConnected(): Boolean {
+            return NativeWebSocketManager.isConnected()
+        }
+    }
+
     private fun checkCameraPermission(): Boolean {
         return if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             true
@@ -297,6 +333,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun launchCamera() {
         try {
+            NativeWebSocketManager.onHostResume()
             // 使用相机预览模式，不需要存储权限
             takePicturePreviewLauncher.launch(null)
         } catch (e: Exception) {
@@ -306,6 +343,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchGallery() {
+        NativeWebSocketManager.onHostResume()
         pickImageLauncher.launch("image/*")
     }
 
@@ -444,6 +482,8 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         isAppInBackground = false
+        NativeWebSocketManager.bindWebView(webView)
+        NativeWebSocketManager.onHostResume()
     }
 
     override fun onPause() {
@@ -492,6 +532,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        NativeWebSocketManager.unbindWebView(webView)
         notificationHelper.cancelAllNotifications()
     }
 }
