@@ -13,3 +13,17 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Local Android SDK and temporary setup files
+/android-sdk/
+/commandlinetools-win.zip
+/sdk-yes.txt
+
+# Local build/run logs
+/gradle-build.log
+/gradle-build.err.log
+
+# Android Studio local machine state
+/.idea/.name
+/.idea/codeStyles/
+/.idea/deviceManager.xml
