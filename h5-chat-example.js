@@ -111,6 +111,34 @@ ws.onmessage = function(event) {
     }
 };
 
+// 语音录制示例
+window.handleVoiceResult = function(result) {
+    console.log('语音录制结果:', result);
+    // result: { callbackId, audio, type, mimeType, fileName, durationMs }
+};
+
+window.handleVoiceError = function(errorObj) {
+    console.error('语音录制错误:', errorObj);
+};
+
+function startVoice(callbackId = 'voice_default') {
+    if (window.AndroidVoice) {
+        window.AndroidVoice.startRecord(callbackId);
+    }
+}
+
+function stopVoice() {
+    if (window.AndroidVoice) {
+        window.AndroidVoice.stopRecord();
+    }
+}
+
+function cancelVoice() {
+    if (window.AndroidVoice) {
+        window.AndroidVoice.cancelRecord();
+    }
+}
+
 // 示例5：轮询方式获取新消息
 async function pollNewMessages() {
     try {

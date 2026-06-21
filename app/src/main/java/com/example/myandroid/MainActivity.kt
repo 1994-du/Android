@@ -1,6 +1,8 @@
 package com.example.myandroid
 
 import android.os.Bundle
+import android.content.ContentValues
+import android.media.MediaRecorder
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.JavascriptInterface
@@ -23,6 +25,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.os.Environment
 import android.media.RingtoneManager
 import android.content.Context
 import org.json.JSONObject
@@ -31,10 +34,14 @@ class MainActivity : AppCompatActivity() {
 
     lateinit var webView: WebView
     private var currentCallbackId: String? = null
+    private var currentVoiceCallbackId: String? = null
     private lateinit var takePictureLauncher: ActivityResultLauncher<Uri>
-    private lateinit var takePicturePreviewLauncher: ActivityResultLauncher<Void?>
     private lateinit var pickImageLauncher: ActivityResultLauncher<String>
     private var tempImageUri: Uri? = null
+    private var mediaRecorder: MediaRecorder? = null
+    private var voiceRecordFile: File? = null
+    private var voiceRecordStartTimeMs: Long = 0L
+    private var isVoiceRecording = false
     private lateinit var notificationHelper: NotificationHelper
     private var isAppInBackground = false
     private var keyboardHeight = 0
@@ -102,39 +109,15 @@ class MainActivity : AppCompatActivity() {
         }
         webView.loadUrl("http://106.15.207.57/MyApp/")
 
-        // Initialize activity result launchers
         takePictureLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-            if (success && tempImageUri != null) {
-                tempImageUri?.let { uri ->
-                    handleImageResult(uri)
-                }
+            NativeWebSocketManager.onHostResume()
+            val uri = tempImageUri
+            if (success && uri != null) {
+                handleImageResult(uri, "camera")
             } else {
                 sendErrorToWeb("拍照失败")
             }
             tempImageUri = null
-        }
-
-        // 相机预览模式（不需要存储权限）
-        takePicturePreviewLauncher = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-            NativeWebSocketManager.onHostResume()
-            if (bitmap != null) {
-                val callbackId = currentCallbackId ?: "default"
-                val base64 = bitmapToBase64(bitmap)
-                if (base64 != null) {
-                    val data = JSONObject()
-                    data.put("callbackId", callbackId)
-                    data.put("image", base64)
-                    data.put("type", "camera")
-                    val js = "if (window.handlePhotoResult) { window.handlePhotoResult(" + data.toString() + ") }"
-                    webView.post {
-                        webView.evaluateJavascript(js, null)
-                    }
-                } else {
-                    sendErrorToWeb("图片转换失败")
-                }
-            } else {
-                sendErrorToWeb("拍照失败")
-            }
             currentCallbackId = null
         }
 
@@ -150,6 +133,7 @@ class MainActivity : AppCompatActivity() {
         // Add JavaScript interface
         webView.addJavascriptInterface(PhotoJavaScriptInterface(), "AndroidPhoto")
         webView.addJavascriptInterface(ChatJavaScriptInterface(), "AndroidChat")
+        webView.addJavascriptInterface(VoiceJavaScriptInterface(), "AndroidVoice")
         webView.addJavascriptInterface(WebSocketJavaScriptInterface(), "AndroidWebSocket")
         
         notificationHelper = NotificationHelper(this)
@@ -254,6 +238,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    inner class VoiceJavaScriptInterface {
+        @JavascriptInterface
+        fun startRecord(callbackId: String) {
+            currentVoiceCallbackId = callbackId
+            if (checkAudioPermission()) {
+                startVoiceRecording()
+            }
+        }
+
+        @JavascriptInterface
+        fun stopRecord() {
+            stopVoiceRecording(cancel = false)
+        }
+
+        @JavascriptInterface
+        fun cancelRecord() {
+            stopVoiceRecording(cancel = true)
+        }
+
+        @JavascriptInterface
+        fun isRecording(): Boolean {
+            return isVoiceRecording
+        }
+    }
+
     inner class WebSocketJavaScriptInterface {
         @JavascriptInterface
         fun connect(wsUrl: String, userInfoJson: String?) {
@@ -286,6 +295,15 @@ class MainActivity : AppCompatActivity() {
             true
         } else {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1001)
+            false
+        }
+    }
+
+    private fun checkAudioPermission(): Boolean {
+        return if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            true
+        } else {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1004)
             false
         }
     }
@@ -328,14 +346,25 @@ class MainActivity : AppCompatActivity() {
                     sendErrorToWeb("存储权限被拒绝")
                 }
             }
+            1004 -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    startVoiceRecording()
+                } else {
+                    sendVoiceError("录音权限被拒绝")
+                }
+            }
         }
     }
 
     private fun launchCamera() {
         try {
             NativeWebSocketManager.onHostResume()
-            // 使用相机预览模式，不需要存储权限
-            takePicturePreviewLauncher.launch(null)
+            tempImageUri = createCameraImageUri()
+            if (tempImageUri != null) {
+                takePictureLauncher.launch(tempImageUri!!)
+            } else {
+                sendErrorToWeb("创建图片文件失败")
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             sendErrorToWeb("相机启动失败: ${e.message}")
@@ -347,7 +376,7 @@ class MainActivity : AppCompatActivity() {
         pickImageLauncher.launch("image/*")
     }
 
-    private fun handleImageResult(uri: Uri) {
+    private fun handleImageResult(uri: Uri, type: String = "gallery") {
         try {
             val callbackId = currentCallbackId ?: "default"
             val base64 = uriToBase64(uri)
@@ -355,7 +384,7 @@ class MainActivity : AppCompatActivity() {
                 val data = JSONObject()
                 data.put("callbackId", callbackId)
                 data.put("image", base64)
-                data.put("type", "gallery")
+                data.put("type", type)
                 val js = "if (window.handlePhotoResult) { window.handlePhotoResult(" + data.toString() + ") }"
                 webView.post {
                     webView.evaluateJavascript(js, null)
@@ -385,13 +414,150 @@ class MainActivity : AppCompatActivity() {
         return null
     }
 
-    private fun bitmapToBase64(bitmap: android.graphics.Bitmap): String? {
+    private fun startVoiceRecording() {
+        if (isVoiceRecording) {
+            sendVoiceError("正在录音中")
+            return
+        }
+
         try {
-            val byteArrayOutputStream = java.io.ByteArrayOutputStream()
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream)
-            val bytes = byteArrayOutputStream.toByteArray()
-            byteArrayOutputStream.close()
-            return "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.DEFAULT)
+            val callbackId = currentVoiceCallbackId ?: "default"
+            val file = createVoiceRecordFile()
+            if (file == null) {
+                sendVoiceError("创建录音文件失败")
+                return
+            }
+
+            val recorder = MediaRecorder()
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioSamplingRate(44100)
+            recorder.setAudioEncodingBitRate(64000)
+            recorder.setAudioChannels(1)
+            recorder.setOutputFile(file.absolutePath)
+            recorder.prepare()
+            recorder.start()
+
+            mediaRecorder = recorder
+            voiceRecordFile = file
+            voiceRecordStartTimeMs = System.currentTimeMillis()
+            isVoiceRecording = true
+            currentVoiceCallbackId = callbackId
+        } catch (e: Exception) {
+            e.printStackTrace()
+            stopVoiceRecording(cancel = true)
+            sendVoiceError("录音启动失败: ${e.message}")
+        }
+    }
+
+    private fun stopVoiceRecording(cancel: Boolean) {
+        if (!isVoiceRecording && voiceRecordFile == null) {
+            if (!cancel) {
+                sendVoiceError("当前没有正在录音")
+            }
+            currentVoiceCallbackId = null
+            return
+        }
+
+        val callbackId = currentVoiceCallbackId ?: "default"
+        val file = voiceRecordFile
+        val durationMs = (System.currentTimeMillis() - voiceRecordStartTimeMs).coerceAtLeast(0L)
+        val recorder = mediaRecorder
+
+        isVoiceRecording = false
+        mediaRecorder = null
+        voiceRecordStartTimeMs = 0L
+
+        try {
+            if (recorder != null) {
+                runCatching { recorder.stop() }
+                runCatching { recorder.reset() }
+                runCatching { recorder.release() }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        if (cancel) {
+            runCatching { file?.delete() }
+            voiceRecordFile = null
+            currentVoiceCallbackId = null
+            return
+        }
+
+        if (file == null || !file.exists()) {
+            voiceRecordFile = null
+            sendVoiceError("录音文件不存在")
+            return
+        }
+
+        Thread {
+            try {
+                val base64 = audioFileToBase64(file)
+                if (base64 == null) {
+                    sendVoiceError("录音转换失败")
+                    return@Thread
+                }
+
+                val data = JSONObject()
+                data.put("callbackId", callbackId)
+                data.put("audio", base64)
+                data.put("type", "voice")
+                data.put("mimeType", "audio/mp4")
+                data.put("fileName", file.name)
+                data.put("durationMs", durationMs)
+
+                val js = "if (window.handleVoiceResult) { window.handleVoiceResult(" + data.toString() + ") }"
+                webView.post {
+                    webView.evaluateJavascript(js, null)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                sendVoiceError("处理录音失败: ${e.message}")
+            } finally {
+                runCatching { file.delete() }
+                voiceRecordFile = null
+                currentVoiceCallbackId = null
+            }
+        }.start()
+    }
+
+    private fun createVoiceRecordFile(): File? {
+        return try {
+            val dir = File(cacheDir, "voice_recordings")
+            if (!dir.exists()) {
+                dir.mkdirs()
+            }
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            File(dir, "voice_$timestamp.m4a")
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun audioFileToBase64(file: File): String? {
+        return try {
+            val bytes = file.readBytes()
+            "data:audio/mp4;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun createCameraImageUri(): Uri? {
+        try {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "IMG_$timestamp.jpg")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/MyAndroid")
+                }
+            }
+            return contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -408,6 +574,18 @@ class MainActivity : AppCompatActivity() {
             webView.evaluateJavascript(js, null)
         }
         currentCallbackId = null
+    }
+
+    private fun sendVoiceError(error: String) {
+        val callbackId = currentVoiceCallbackId ?: "default"
+        val data = JSONObject()
+        data.put("callbackId", callbackId)
+        data.put("error", error)
+        val js = "if (window.handleVoiceError) { window.handleVoiceError(" + data.toString() + ") }"
+        webView.post {
+            webView.evaluateJavascript(js, null)
+        }
+        currentVoiceCallbackId = null
     }
 
     private fun checkNotificationPermission(): Boolean {
@@ -533,6 +711,21 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         NativeWebSocketManager.unbindWebView(webView)
+        if (isVoiceRecording || voiceRecordFile != null) {
+            runCatching {
+                mediaRecorder?.stop()
+            }
+            runCatching {
+                mediaRecorder?.reset()
+                mediaRecorder?.release()
+            }
+            mediaRecorder = null
+            isVoiceRecording = false
+            voiceRecordStartTimeMs = 0L
+            runCatching { voiceRecordFile?.delete() }
+            voiceRecordFile = null
+            currentVoiceCallbackId = null
+        }
         notificationHelper.cancelAllNotifications()
     }
 }
