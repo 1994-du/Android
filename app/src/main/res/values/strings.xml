@@ -1,3 +1,22 @@
 <resources>
     <string name="app_name">DxAndroid</string>
+    <string name="login_title">欢迎回来</string>
+    <string name="login_subtitle">请先完成原生登录，登录成功后将进入内嵌 H5 页面。</string>
+    <string name="login_brand">APP H5</string>
+    <string name="login_tab_login">登录</string>
+    <string name="login_tab_register">注册</string>
+    <string name="login_badge_text">01</string>
+    <string name="login_username_label">用户名</string>
+    <string name="login_password_label">密码</string>
+    <string name="login_username_hint">请输入账号</string>
+    <string name="login_password_hint">请输入密码</string>
+    <string name="login_button">登录并进入</string>
+    <string name="login_action">登录</string>
+    <string name="login_remember_me">记住我</string>
+    <string name="login_auto_jump_tip">登录后自动跳转聊天页</string>
+    <string name="login_no_account">还没有账户?</string>
+    <string name="login_register_now">立即注册</string>
+    <string name="login_loading">正在登录…</string>
+    <string name="login_missing_fields">请输入账号和密码</string>
+    <string name="login_failed_default">登录失败，请稍后重试</string>
 </resources>
