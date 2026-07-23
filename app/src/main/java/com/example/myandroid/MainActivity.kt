@@ -22,6 +22,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.util.Log
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -324,6 +325,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
+                Log.d(TAG, "H5 page finished: url=$url")
                 isH5PageReady = true
                 injectDxChatState(view)
                 view.evaluateJavascript(
@@ -343,7 +345,12 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(ChatJavaScriptInterface(), "AndroidChat")
         webView.addJavascriptInterface(VoiceJavaScriptInterface(), "AndroidVoice")
         webView.addJavascriptInterface(WebSocketJavaScriptInterface(), "AndroidWebSocket")
-        webView.addJavascriptInterface(DxChatNativeBridgeInterface(), DXCHAT_NATIVE_BRIDGE_NAME)
+        webView.addJavascriptInterface(DxChatNativeBridgeInterface(), DXCHAT_NATIVE_API_NAME)
+        Log.d(
+            TAG,
+            "WebView bridges registered: AndroidPhoto, AndroidChat, AndroidVoice, " +
+                "AndroidWebSocket, $DXCHAT_NATIVE_API_NAME"
+        )
         webView.loadUrl(H5_URL)
         isWebViewInitialized = true
     }
@@ -351,14 +358,67 @@ class MainActivity : AppCompatActivity() {
     private fun injectDxChatState(targetWebView: WebView = webView) {
         val rawResponse = authStorage.getLoginResponse().orEmpty()
         val quotedRawResponse = JSONObject.quote(rawResponse)
+        val tokenPresent = authStorage.getSecurityToken()?.isNotBlank() == true
+        Log.d(
+            TAG,
+            "Injecting H5 native state: responsePresent=${rawResponse.isNotBlank()}, " +
+                "tokenPresent=$tokenPresent, target=${targetWebView.url}"
+        )
         targetWebView.post {
             targetWebView.evaluateJavascript(
                 """
+                window.DXCHAT_NATIVE = {
+                    isNative: function() {
+                        console.log('[nativeBridge] DXCHAT_NATIVE.isNative called');
+                        return true;
+                    },
+                    getSecurity: function(success, fail) {
+                        try {
+                            var token = window.$DXCHAT_NATIVE_API_NAME.getSecurityToken();
+                            console.log('[nativeBridge] DXCHAT_NATIVE.getSecurity called, tokenPresent=' + !!token);
+                            if (token) {
+                                if (typeof success === 'function') {
+                                    success(token);
+                                }
+                                return token;
+                            }
+                            var missingMessage = '未获取到令牌';
+                            if (typeof fail === 'function') {
+                                fail(missingMessage);
+                            }
+                            return '';
+                        } catch (error) {
+                            var errorMessage = error && error.message ? error.message : '获取令牌失败';
+                            console.error('[nativeBridge] DXCHAT_NATIVE.getSecurity failed', error);
+                            if (typeof fail === 'function') {
+                                fail(errorMessage);
+                            }
+                            return '';
+                        }
+                    },
+                    getSecurityToken: function() {
+                        return window.$DXCHAT_NATIVE_API_NAME.getSecurityToken();
+                    },
+                    getLoginResponse: function() {
+                        return window.$DXCHAT_NATIVE_API_NAME.getLoginResponse();
+                    },
+                    getSavedUsername: function() {
+                        return window.$DXCHAT_NATIVE_API_NAME.getSavedUsername();
+                    },
+                    logout: function() {
+                        console.log('[nativeBridge] DXCHAT_NATIVE.logout called');
+                        window.$DXCHAT_NATIVE_API_NAME.logout();
+                    }
+                };
+                console.log('[nativeBridge] DXCHAT_NATIVE compatibility ready', {
+                    hasIsNative: typeof window.DXCHAT_NATIVE.isNative === 'function',
+                    hasGetSecurity: typeof window.DXCHAT_NATIVE.getSecurity === 'function'
+                });
                 window.DXCHAT = window.DXCHAT || {};
                 window.DXCHAT.isNative = true;
                 window.DXCHAT.getSecurity = function(success, fail) {
                     try {
-                        var token = $DXCHAT_NATIVE_BRIDGE_NAME.getSecurityToken();
+                        var token = window.$DXCHAT_NATIVE_API_NAME.getSecurityToken();
                         if (token) {
                             if (typeof success === 'function') {
                                 success(token);
@@ -386,6 +446,10 @@ class MainActivity : AppCompatActivity() {
                 } catch (error) {
                     window.NATIVE_LOGIN_RESPONSE = window.NATIVE_LOGIN_RESPONSE_RAW || null;
                 }
+                console.log('[nativeBridge] DXCHAT state injected', {
+                    isNative: window.DXCHAT.isNative,
+                    hasToken: !!window.NATIVE_LOGIN_RESPONSE
+                });
                 window.dispatchEvent(new Event('dxchatReady'));
                 window.dispatchEvent(new Event('nativeLoginReady'));
                 """.trimIndent(),
@@ -543,21 +607,34 @@ class MainActivity : AppCompatActivity() {
     inner class DxChatNativeBridgeInterface {
         @JavascriptInterface
         fun getSecurityToken(): String {
-            return authStorage.getSecurityToken().orEmpty()
+            val token = authStorage.getSecurityToken().orEmpty()
+            Log.d(TAG, "DXCHAT_NATIVE_API.getSecurityToken called: tokenPresent=${token.isNotBlank()}")
+            return token
         }
 
         @JavascriptInterface
         fun getLoginResponse(): String {
-            return authStorage.getLoginResponse().orEmpty()
+            val response = authStorage.getLoginResponse().orEmpty()
+            Log.d(
+                TAG,
+                "DXCHAT_NATIVE_API.getLoginResponse called: responsePresent=${response.isNotBlank()}"
+            )
+            return response
         }
 
         @JavascriptInterface
         fun getSavedUsername(): String {
-            return authStorage.getSavedUsername().orEmpty()
+            val username = authStorage.getSavedUsername().orEmpty()
+            Log.d(
+                TAG,
+                "DXCHAT_NATIVE_API.getSavedUsername called: usernamePresent=${username.isNotBlank()}"
+            )
+            return username
         }
 
         @JavascriptInterface
         fun logout() {
+            Log.d(TAG, "DXCHAT_NATIVE_API.logout called")
             runOnUiThread {
                 showLoginScreen(clearSavedState = true)
             }
@@ -1051,11 +1128,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val H5_URL = "http://106.15.207.57/MyApp/"
 
         // If the backend login path is different, adjust this constant directly.
         private const val LOGIN_API_URL = "http://106.15.207.57/api/auth/app/login"
-        private const val DXCHAT_NATIVE_BRIDGE_NAME = "DXCHAT_NATIVE"
+        private const val DXCHAT_NATIVE_API_NAME = "DXCHAT_NATIVE_API"
 
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
